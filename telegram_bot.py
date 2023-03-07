@@ -1,5 +1,6 @@
 import logging
 import os
+from uuid import uuid4
 
 import telegram.constants as constants
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
@@ -178,21 +179,31 @@ class ChatGPT3TelegramBot:
         """
         Handle the inline query. This is run when you type: @botusername <query>
         """
-        query = update.inline_query.query
-
-        if query == "":
+        if not await self.is_allowed(update):
+            logging.warning(f'User {update.inline_query.from_user.name} is not allowed to use the bot inline')
+            await update.inline_query.answer(
+                results=[], switch_pm_text='Sorry, you are not allowed to use this bot', switch_pm_parameter='start'
+            )
             return
 
+        query = update.inline_query.query
+
+        if len(query) < 3:
+            return
+
+        response = self.openai.get_chat_response(chat_id=update.inline_query.from_user.id, query=query)
         results = [
             InlineQueryResultArticle(
-                id=query,
-                title="Ask ChatGPT",
-                input_message_content=InputTextMessageContent(query),
-                description=query,
+                id=str(uuid4()),
+                title=query,
+                input_message_content=InputTextMessageContent(
+                    message_text=f'_{query}_\n\n{response}',
+                    parse_mode=constants.ParseMode.MARKDOWN
+                ),
+                description=response.strip(),
                 thumb_url='https://user-images.githubusercontent.com/11541888/223106202-7576ff11-2c8e-408d-94ea-b02a7a32149a.png'
             )
         ]
-
         await update.inline_query.answer(results)
 
     async def send_disallowed_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -241,6 +252,9 @@ class ChatGPT3TelegramBot:
         allowed_user_ids = self.config['allowed_user_ids'].split(',')
 
         # Check if user is allowed
+        if update.inline_query is not None:
+            return str(update.inline_query.from_user.id) in allowed_user_ids
+
         if str(update.message.from_user.id) in allowed_user_ids:
             return True
 
@@ -270,9 +284,7 @@ class ChatGPT3TelegramBot:
         application.add_handler(CommandHandler('start', self.help))
         application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self.transcribe))
         application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
-        application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
-            constants.ChatType.GROUP, constants.ChatType.SUPERGROUP
-        ]))
+        application.add_handler(InlineQueryHandler(self.inline_query))
 
         application.add_error_handler(self.error_handler)
 
